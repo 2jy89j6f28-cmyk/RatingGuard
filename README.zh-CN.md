@@ -428,12 +428,12 @@ class ClaudeDriver(LLMDriver):
 - [x] SSE 实时 SaaS 面板
 - [x] SQLite 持久化存储（商品 / 评价 / 分析）
 - [x] Docker 一键部署（docker-compose、多阶段构建）
-- [ ] Amazon 评价爬取支持
-- [ ] 批量评价处理与定时调度
-- [ ] OAuth / JWT 身份认证
-- [ ] Webhook 集成（Slack、邮件）
-- [ ] 挽回邮件 A/B 效果测试
-- [ ] 数据分析面板（挽回率、回复指标）
+- [x] Amazon 评价爬取支持
+- [x] 批量评价处理与定时调度
+- [x] OAuth / JWT 身份认证
+- [x] Webhook 集成（Slack、邮件）
+- [x] 挽回邮件 A/B 效果测试
+- [x] 数据分析面板（挽回率、回复指标）
 
 ---
 

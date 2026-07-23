@@ -9,8 +9,10 @@
 所有数据库操作通过 FastAPI Depends(get_connection) 注入。
 """
 
+import hashlib
 import os
 import sqlite3
+from datetime import datetime, timezone
 from typing import AsyncGenerator
 
 import aiosqlite
@@ -78,6 +80,64 @@ CREATE TABLE IF NOT EXISTS analyses (
 CREATE INDEX IF NOT EXISTS idx_reviews_product_id ON reviews(product_id);
 CREATE INDEX IF NOT EXISTS idx_reviews_rating ON reviews(rating);
 CREATE INDEX IF NOT EXISTS idx_analyses_review_id ON analyses(review_id);
+
+CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username TEXT NOT NULL UNIQUE,
+    password_hash TEXT NOT NULL,
+    email TEXT DEFAULT '',
+    created_at TEXT NOT NULL,
+    is_active INTEGER DEFAULT 1
+);
+
+CREATE TABLE IF NOT EXISTS batch_jobs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_type TEXT NOT NULL DEFAULT 'batch_analysis',
+    status TEXT NOT NULL DEFAULT 'pending',
+    total_items INTEGER DEFAULT 0,
+    completed_items INTEGER DEFAULT 0,
+    error_message TEXT DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS webhooks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    webhook_type TEXT NOT NULL DEFAULT 'slack',
+    url TEXT NOT NULL,
+    is_active INTEGER DEFAULT 1,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS ab_variants (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    review_id INTEGER NOT NULL REFERENCES reviews(id) ON DELETE CASCADE,
+    variant_label TEXT NOT NULL,
+    email_subject TEXT DEFAULT '',
+    email_body TEXT DEFAULT '',
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS ab_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    variant_id INTEGER NOT NULL REFERENCES ab_variants(id) ON DELETE CASCADE,
+    event_type TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS webhook_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    webhook_id INTEGER NOT NULL REFERENCES webhooks(id) ON DELETE CASCADE,
+    status TEXT NOT NULL,
+    response_code INTEGER DEFAULT 0,
+    error_message TEXT DEFAULT '',
+    created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_ab_variants_review_id ON ab_variants(review_id);
+CREATE INDEX IF NOT EXISTS idx_ab_events_variant_id ON ab_events(variant_id);
+CREATE INDEX IF NOT EXISTS idx_webhook_logs_webhook_id ON webhook_logs(webhook_id);
 """
 
 
@@ -316,3 +376,355 @@ async def upsert_analysis(
     )
     await db.commit()
     return cursor.lastrowid or review_id
+
+
+# ============================================================
+#  Batch Jobs CRUD
+# ============================================================
+
+async def create_batch_job(
+    db: aiosqlite.Connection,
+    job_type: str = "batch_analysis",
+    total_items: int = 0,
+) -> int:
+    """创建批量任务记录，返回 job_id。"""
+    now = datetime.now(timezone.utc).isoformat()
+    cursor = await db.execute(
+        """
+        INSERT INTO batch_jobs (job_type, status, total_items, created_at, updated_at)
+        VALUES (?, 'running', ?, ?, ?)
+        """,
+        (job_type, total_items, now, now),
+    )
+    await db.commit()
+    return cursor.lastrowid
+
+
+async def update_batch_job(
+    db: aiosqlite.Connection,
+    job_id: int,
+    status: str | None = None,
+    completed: int | None = None,
+    error_message: str | None = None,
+) -> None:
+    """更新批量任务状态。只更新传入的非 None 字段。"""
+    now = datetime.now(timezone.utc).isoformat()
+    sets = ["updated_at = ?"]
+    params: list = [now]
+
+    if status is not None:
+        sets.append("status = ?")
+        params.append(status)
+    if completed is not None:
+        sets.append("completed_items = ?")
+        params.append(completed)
+    if error_message is not None:
+        sets.append("error_message = ?")
+        params.append(error_message)
+
+    params.append(job_id)
+    await db.execute(
+        f"UPDATE batch_jobs SET {', '.join(sets)} WHERE id = ?",
+        params,
+    )
+    await db.commit()
+
+
+async def get_batch_jobs(
+    db: aiosqlite.Connection,
+    limit: int = 20,
+) -> list[dict]:
+    """获取最近的批量任务列表。"""
+    cursor = await db.execute(
+        "SELECT * FROM batch_jobs ORDER BY created_at DESC LIMIT ?",
+        (limit,),
+    )
+    rows = await cursor.fetchall()
+    return [dict(row) for row in rows]
+
+
+# ============================================================
+#  Webhook CRUD
+# ============================================================
+
+async def create_webhook(
+    db: aiosqlite.Connection,
+    name: str,
+    webhook_type: str,
+    url: str,
+) -> int:
+    """创建 webhook 配置，返回 id。"""
+    now = datetime.now(timezone.utc).isoformat()
+    cursor = await db.execute(
+        """
+        INSERT INTO webhooks (name, webhook_type, url, is_active, created_at)
+        VALUES (?, ?, ?, 1, ?)
+        """,
+        (name, webhook_type, url, now),
+    )
+    await db.commit()
+    return cursor.lastrowid
+
+
+async def get_active_webhooks(
+    db: aiosqlite.Connection,
+) -> list[dict]:
+    """获取所有激活的 webhook。"""
+    cursor = await db.execute(
+        "SELECT * FROM webhooks WHERE is_active = 1 ORDER BY created_at DESC"
+    )
+    rows = await cursor.fetchall()
+    return [dict(row) for row in rows]
+
+
+async def delete_webhook(
+    db: aiosqlite.Connection,
+    webhook_id: int,
+) -> None:
+    """软删除 webhook（设为非激活）。"""
+    await db.execute(
+        "UPDATE webhooks SET is_active = 0 WHERE id = ?",
+        (webhook_id,),
+    )
+    await db.commit()
+
+
+async def log_webhook_delivery(
+    db: aiosqlite.Connection,
+    webhook_id: int,
+    status: str,
+    response_code: int = 0,
+    error_message: str = "",
+) -> None:
+    """记录 webhook 发送日志。"""
+    now = datetime.now(timezone.utc).isoformat()
+    await db.execute(
+        """
+        INSERT INTO webhook_logs (webhook_id, status, response_code, error_message, created_at)
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (webhook_id, status, response_code, error_message, now),
+    )
+    await db.commit()
+
+
+# ============================================================
+#  Users CRUD（认证系统）
+# ============================================================
+
+async def create_user(
+    db: aiosqlite.Connection,
+    username: str,
+    password: str,
+) -> int | None:
+    """
+    创建新用户。返回用户 ID，如果用户名已存在则返回 None。
+
+    密码使用 SHA-256 哈希存储。
+    """
+    password_hash = hashlib.sha256(password.encode("utf-8")).hexdigest()
+    now = datetime.now(timezone.utc).isoformat()
+
+    try:
+        cursor = await db.execute(
+            """
+            INSERT INTO users (username, password_hash, created_at)
+            VALUES (?, ?, ?)
+            """,
+            (username, password_hash, now),
+        )
+        await db.commit()
+        return cursor.lastrowid
+    except aiosqlite.IntegrityError:
+        logger.warning("用户名已存在: %s", username)
+        return None
+
+
+async def verify_user(
+    db: aiosqlite.Connection,
+    username: str,
+    password: str,
+) -> dict | None:
+    """
+    验证用户凭据。成功返回用户信息字典，失败返回 None。
+    """
+    password_hash = hashlib.sha256(password.encode("utf-8")).hexdigest()
+
+    cursor = await db.execute(
+        "SELECT id, username FROM users WHERE username = ? AND password_hash = ? AND is_active = 1",
+        (username, password_hash),
+    )
+    row = await cursor.fetchone()
+    if row is None:
+        return None
+    return {"id": row["id"], "username": row["username"]}
+
+
+# ============================================================
+#  A/B Variants CRUD
+# ============================================================
+
+async def create_ab_variant(
+    db: aiosqlite.Connection,
+    review_id: int,
+    variant_label: str,
+    email_subject: str = "",
+    email_body: str = "",
+) -> int:
+    """创建 A/B 邮件变体记录，返回 variant_id。"""
+    now = datetime.now(timezone.utc).isoformat()
+    cursor = await db.execute(
+        """
+        INSERT INTO ab_variants (review_id, variant_label, email_subject, email_body, created_at)
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (review_id, variant_label, email_subject, email_body, now),
+    )
+    await db.commit()
+    return cursor.lastrowid
+
+
+async def get_variants_for_review(
+    db: aiosqlite.Connection,
+    review_id: int,
+) -> list[dict]:
+    """获取指定评论的所有 A/B 变体。"""
+    cursor = await db.execute(
+        "SELECT * FROM ab_variants WHERE review_id = ? ORDER BY variant_label",
+        (review_id,),
+    )
+    rows = await cursor.fetchall()
+    return [dict(row) for row in rows]
+
+
+async def record_ab_event(
+    db: aiosqlite.Connection,
+    variant_id: int,
+    event_type: str,
+) -> int:
+    """记录 A/B 事件（如 sent, opened, clicked），返回 event_id。"""
+    now = datetime.now(timezone.utc).isoformat()
+    cursor = await db.execute(
+        """
+        INSERT INTO ab_events (variant_id, event_type, created_at)
+        VALUES (?, ?, ?)
+        """,
+        (variant_id, event_type, now),
+    )
+    await db.commit()
+    return cursor.lastrowid
+
+
+async def get_ab_stats(db: aiosqlite.Connection) -> dict:
+    """获取 A/B 测试统计摘要。"""
+    cursor = await db.execute("SELECT COUNT(*) as total FROM ab_variants")
+    row = await cursor.fetchone()
+    total_variants = row["total"] if row else 0
+
+    cursor = await db.execute("""
+        SELECT variant_label, COUNT(*) as count
+        FROM ab_variants GROUP BY variant_label
+    """)
+    label_rows = await cursor.fetchall()
+    by_label = {r["variant_label"]: r["count"] for r in label_rows}
+
+    cursor = await db.execute("""
+        SELECT e.event_type, COUNT(*) as count
+        FROM ab_events e
+        JOIN ab_variants v ON e.variant_id = v.id
+        GROUP BY e.event_type
+    """)
+    event_rows = await cursor.fetchall()
+    events = {r["event_type"]: r["count"] for r in event_rows}
+
+    cursor = await db.execute("""
+        SELECT v.variant_label, e.event_type, COUNT(*) as count
+        FROM ab_events e
+        JOIN ab_variants v ON e.variant_id = v.id
+        GROUP BY v.variant_label, e.event_type
+        ORDER BY v.variant_label, e.event_type
+    """)
+    detail_rows = await cursor.fetchall()
+
+    variant_stats = {}
+    for r in detail_rows:
+        label = r["variant_label"]
+        if label not in variant_stats:
+            variant_stats[label] = {}
+        variant_stats[label][r["event_type"]] = r["count"]
+
+    return {
+        "total_variants": total_variants,
+        "by_label": by_label,
+        "events": events,
+        "variant_stats": variant_stats,
+    }
+
+
+# ============================================================
+#  Analytics Summary
+# ============================================================
+
+async def get_analytics_summary(db: aiosqlite.Connection) -> dict:
+    """获取分析面板概览统计数据。"""
+    cursor = await db.execute("SELECT COUNT(*) as total FROM reviews WHERE is_negative = 1")
+    row = await cursor.fetchone()
+    total_reviews = row["total"] if row else 0
+
+    cursor = await db.execute("SELECT COUNT(*) as total FROM analyses")
+    row = await cursor.fetchone()
+    analyzed_reviews = row["total"] if row else 0
+
+    cursor = await db.execute("SELECT ROUND(AVG(anger_level), 1) as avg_anger FROM analyses")
+    row = await cursor.fetchone()
+    avg_anger = row["avg_anger"] if row and row["avg_anger"] is not None else 0
+
+    cursor = await db.execute("""
+        SELECT reason_category, COUNT(*) as count
+        FROM analyses GROUP BY reason_category ORDER BY count DESC LIMIT 10
+    """)
+    reason_rows = await cursor.fetchall()
+    top_reasons = [{"category": r["reason_category"], "count": r["count"]} for r in reason_rows]
+
+    return {
+        "total_reviews": total_reviews,
+        "analyzed_reviews": analyzed_reviews,
+        "avg_anger": avg_anger,
+        "top_reasons": top_reasons,
+    }
+
+
+async def get_webhook_stats(db: aiosqlite.Connection) -> dict:
+    """获取 Webhook 相关统计。"""
+    cursor = await db.execute("SELECT COUNT(*) as total FROM webhooks WHERE is_active = 1")
+    row = await cursor.fetchone()
+    active_webhooks = row["total"] if row else 0
+
+    cursor = await db.execute("""
+        SELECT status, COUNT(*) as count
+        FROM webhook_logs GROUP BY status ORDER BY count DESC
+    """)
+    log_rows = await cursor.fetchall()
+    log_stats = {r["status"]: r["count"] for r in log_rows}
+
+    cursor = await db.execute("SELECT COUNT(*) as total FROM webhook_logs")
+    row = await cursor.fetchone()
+    total_deliveries = row["total"] if row else 0
+
+    return {
+        "active_webhooks": active_webhooks,
+        "total_deliveries": total_deliveries,
+        "delivery_stats": log_stats,
+    }
+
+
+async def get_user_by_username(
+    db: aiosqlite.Connection,
+    username: str,
+) -> dict | None:
+    """按用户名查询用户，返回完整用户字典或 None。"""
+    cursor = await db.execute(
+        "SELECT * FROM users WHERE username = ?", (username,)
+    )
+    row = await cursor.fetchone()
+    return dict(row) if row else None

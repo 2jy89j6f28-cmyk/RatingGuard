@@ -3,6 +3,9 @@
 import { useState, useCallback, useEffect } from "react";
 import { useRecoveryStream } from "@/hooks/useRecoveryStream";
 import { useReviews } from "@/hooks/useReviews";
+import { useAuth } from "@/hooks/useAuth";
+import LoginModal from "@/components/LoginModal";
+import AnalyticsDashboard from "@/components/AnalyticsDashboard";
 import type { StreamResult } from "@/hooks/useRecoveryStream";
 import type { ProductReview } from "@/lib/api";
 
@@ -629,8 +632,8 @@ function RecoveryPanel({
   result: StreamResult | null;
   error: string | null;
 }) {
-  // 空状态：未选择评论，也没有流式内容
-  if (!selectedReview && !isStreaming && !result && !streamedText) {
+  // 空状态：未选择评论，也没有流式内容，且无错误
+  if (!selectedReview && !isStreaming && !result && !streamedText && !error) {
     return (
       <div className="flex h-full min-h-[400px] flex-col items-center justify-center rounded-xl border border-dashed border-gray-800 text-center">
         <div className="mb-4 text-4xl text-gray-700">📋</div>
@@ -666,7 +669,7 @@ function RecoveryPanel({
       {/* 邮件卡片（流式或完成） */}
       <EmailCard
         subject={result?.recovery_email.subject ?? ""}
-        body={streamedText}
+        body={result ? result.recovery_email.body : streamedText}
         isStreaming={isStreaming}
       />
 
@@ -686,6 +689,9 @@ function RecoveryPanel({
 
 export default function HomePage() {
   const [inputMode, setInputMode] = useState<InputMode>("scrape");
+  const [authModalOpen, setAuthModalOpen] = useState(false);
+  const [showAnalytics, setShowAnalytics] = useState(false);
+  const { isAuthenticated, username, logout } = useAuth();
 
   const {
     reviews,
@@ -757,6 +763,37 @@ export default function HomePage() {
         </div>
 
         <div className="flex items-center gap-3">
+          {isAuthenticated ? (
+            <div className="flex items-center gap-2">
+              <span className="text-sm text-gray-400">{username}</span>
+              <button
+                type="button"
+                onClick={logout}
+                className="rounded-lg border border-gray-700 bg-gray-800/50 px-3 py-1.5 text-xs text-gray-400 transition-colors hover:border-red-500/30 hover:bg-red-500/10 hover:text-red-400"
+              >
+                登出
+              </button>
+            </div>
+          ) : (
+            <button
+              type="button"
+              onClick={() => setAuthModalOpen(true)}
+              className="rounded-lg border border-accent/30 bg-accent/5 px-3.5 py-1.5 text-xs font-medium text-accent-light transition-all hover:bg-accent/10 hover:shadow-[0_0_16px_-6px_rgba(16,185,129,0.3)]"
+            >
+              登录 / 注册
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={() => setShowAnalytics(!showAnalytics)}
+            className={`rounded-lg border px-3 py-1 text-xs font-medium transition-all ${
+              showAnalytics
+                ? "border-accent/40 bg-accent/10 text-accent-light"
+                : "border-gray-700 bg-gray-800/50 text-gray-400 hover:border-gray-600 hover:text-gray-300"
+            }`}
+          >
+             分析
+          </button>
           <div className="flex items-center gap-1.5 rounded-full border border-gray-800 bg-gray-900/80 px-3 py-1 text-xs text-gray-500">
             <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 shadow-[0_0_6px_rgba(16,185,129,0.5)]" />
             System Online
@@ -764,7 +801,10 @@ export default function HomePage() {
         </div>
       </header>
 
-      {/* ── 主体：双栏布局 ── */}
+      {/* ── 主体：分析面板 / 双栏布局 ── */}
+      {showAnalytics ? (
+        <AnalyticsDashboard />
+      ) : (
       <div className="flex flex-1 flex-col gap-4 lg:flex-row lg:gap-6">
         {/* ========== 左侧：输入区 ========== */}
         <aside className="w-full space-y-3 lg:w-[360px] xl:w-[400px]">
@@ -846,6 +886,13 @@ export default function HomePage() {
           />
         </main>
       </div>
+      )}
+
+      {/* 登录/注册弹窗 */}
+      <LoginModal
+        isOpen={authModalOpen}
+        onClose={() => setAuthModalOpen(false)}
+      />
     </div>
   );
 }

@@ -12,6 +12,7 @@ from pydantic import BaseModel
 
 from backend.database import get_connection, upsert_product, insert_reviews
 from backend.scraper import ShopifyReviewScraper
+from backend.amazon_scraper import AmazonReviewScraper
 from backend.config import settings
 from backend.logger import logger
 
@@ -21,6 +22,7 @@ router = APIRouter(prefix="/api", tags=["scrape"])
 class ScrapeRequest(BaseModel):
     """爬虫触发请求。"""
     product_url: str
+    platform: str = "shopify"  # "shopify" 或 "amazon"
 
 
 class ScrapeResponse(BaseModel):
@@ -38,25 +40,31 @@ async def scrape_product(body: ScrapeRequest, db=Depends(get_connection)):
 
     请求体：
       - product_url: 商品页完整 URL 或相对路径（如 /products/handle）
+      - platform:    "shopify"（默认）或 "amazon"
     """
     url = body.product_url
-    logger.info("收到爬虫请求: %s", url)
+    platform = body.platform
+    logger.info("收到爬虫请求: platform=%s, url=%s", platform, url)
 
-    # 补全域名（如果只传了相对路径）
-    if url.startswith("/"):
-        if not settings.shopify_domain:
-            raise HTTPException(
-                status_code=400,
-                detail="使用了相对路径但 SHOPIFY_STORE_DOMAIN 未配置。请传入完整 URL 或配置 .env。",
-            )
-        url = f"https://{settings.shopify_domain}{url}"
-
-    # 提取域名
-    parsed = urlparse(url)
-    domain = parsed.netloc or settings.shopify_domain
+    # ---- 根据平台初始化爬虫与域名 ----
+    if platform == "amazon":
+        # Amazon：由爬虫内部处理 URL 转换
+        domain = urlparse(url).netloc or "www.amazon.com"
+        scraper = AmazonReviewScraper()
+    else:
+        # Shopify：补全相对路径
+        if url.startswith("/"):
+            if not settings.shopify_domain:
+                raise HTTPException(
+                    status_code=400,
+                    detail="使用了相对路径但 SHOPIFY_STORE_DOMAIN 未配置。请传入完整 URL 或配置 .env。",
+                )
+            url = f"https://{settings.shopify_domain}{url}"
+        parsed = urlparse(url)
+        domain = parsed.netloc or settings.shopify_domain
+        scraper = ShopifyReviewScraper()
 
     # 执行爬虫（同步操作放到线程池，避免阻塞事件循环）
-    scraper = ShopifyReviewScraper()
     try:
         reviews = await asyncio.to_thread(scraper.scrape_product, url)
     except Exception as e:

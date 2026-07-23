@@ -110,16 +110,25 @@ export function useRecoveryStream(): UseRecoveryStreamReturn {
               bufferRef.current += evt.content || "";
               setStreamedText(bufferRef.current);
               break;
-            case "done":
-              if (evt.result) {
-                // 如果 streamedText 是空的，用 rawText 兜底
-                if (!bufferRef.current && evt.result.rawText) {
-                  bufferRef.current = evt.result.rawText;
+            case "done": {
+              // 后端 done 事件字段在顶层，不在 result 嵌套里
+              const event = evt as Record<string, unknown>;
+              if (event.reason_category !== undefined) {
+                const doneResult: StreamResult = {
+                  reason_category: event.reason_category as string,
+                  anger_level: event.anger_level as number,
+                  customer_persona: event.customer_persona as StreamResult["customer_persona"],
+                  recovery_email: event.recovery_email as StreamResult["recovery_email"],
+                  rawText: event.rawText as string | undefined,
+                };
+                if (!bufferRef.current && doneResult.rawText) {
+                  bufferRef.current = doneResult.rawText;
                   setStreamedText(bufferRef.current);
                 }
-                setResult(evt.result);
+                setResult(doneResult);
               }
               break;
+            }
             case "error":
               setError(evt.message || "未知错误");
               break;

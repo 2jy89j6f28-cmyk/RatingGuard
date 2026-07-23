@@ -429,12 +429,12 @@ The system prompt, few-shot examples, JSON parser, and validation layer all rema
 - [x] SSE real-time SaaS dashboard
 - [x] Persistent SQLite storage (products / reviews / analyses)
 - [x] Docker deployment (docker-compose, multi-stage builds)
-- [ ] Amazon review scraping support
-- [ ] Batch review processing & scheduling
-- [ ] OAuth / JWT authentication
-- [ ] Webhook integration (Slack, email)
-- [ ] A/B testing for recovery email effectiveness
-- [ ] Analytics dashboard (recovery rate, response metrics)
+- [x] Amazon review scraping support
+- [x] Batch review processing & scheduling
+- [x] OAuth / JWT authentication
+- [x] Webhook integration (Slack, email)
+- [x] A/B testing for recovery email effectiveness
+- [x] Analytics dashboard (recovery rate, response metrics)
 
 ---
 

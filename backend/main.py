@@ -65,11 +65,18 @@ class RecoveryRequest(BaseModel):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """启动时初始化数据库。"""
+    """启动时初始化数据库，启动定时调度器；关闭时停止调度器。"""
     from backend.database import init_db
+    from backend.scheduler import start_scheduler, stop_scheduler
+
     await init_db(settings.database_path)
     logger.info("数据库已就绪: %s", settings.database_path)
+
+    start_scheduler()
+
     yield
+
+    await stop_scheduler()
 
 
 # ═════════════════════════════════════════════════════════════════
@@ -107,8 +114,18 @@ app.add_middleware(
 
 from backend.scrape_routes import router as scrape_router
 from backend.review_routes import router as review_router
+from backend.batch_routes import router as batch_router
+from backend.webhook_routes import router as webhook_router
+from backend.auth import router as auth_router
+from backend.ab_routes import router as ab_router
+from backend.analytics_routes import router as analytics_router
 app.include_router(scrape_router)
 app.include_router(review_router)
+app.include_router(batch_router)
+app.include_router(webhook_router)
+app.include_router(auth_router)
+app.include_router(ab_router)
+app.include_router(analytics_router)
 
 
 # ═════════════════════════════════════════════════════════════════
